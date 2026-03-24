@@ -39,7 +39,7 @@ class _FoodLabelScreenState extends State<FoodLabelScreen> {
 
   // 🔑 Updated to Gemini 2.5 Flash for 2026
   // Keep your key as is, but ensure it's active in AI Studio
-  final String _apiKey = 'AIzaSyA15WYsPoKcjENIEa97l73QgTl_WknsdPo';
+  final String _apiKey = 'AIzaSyBoXTeTH7Hy4ZIeafDIBbxSx0_jsg5tOWM';
 
   final ImagePicker _picker = ImagePicker();
 
