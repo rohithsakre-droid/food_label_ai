@@ -47,6 +47,8 @@
 					<string>$(PRODUCT_MODULE_NAME).SceneDelegate</string>
 					<key>UISceneStoryboardFile</key>
 					<string>Main</string>
+					<key>UIMainStoryboardFile</key>
+					<string>Main</string>
 				</dict>
 			</array>
 		</dict>

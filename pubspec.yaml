@@ -1,32 +1,39 @@
 name: food_label_ai
-description: "A new Flutter project."
+description: "An AI-powered food label analyzer using Google Gemini API."
 publish_to: 'none'
 
 version: 1.0.0+1
 
 environment:
-  sdk: ^3.11.1
+  sdk: '>=3.0.0 <4.0.0'
 
 dependencies:
   flutter:
     sdk: flutter
 
-  cupertino_icons: ^1.0.8
-  google_generative_ai: ^0.4.7
-  image_picker: ^1.2.1
-  permission_handler: ^12.0.1
-  http: ^1.6.0
-  flutter_dotenv: ^6.0.0
+  # Image Picking - UPDATED VERSION
+  image_picker: ^1.1.0
+
+  # HTTP Requests - UPDATED VERSION
+  http: ^1.2.0
+
+  # Environment Variables - UPDATED VERSION
+  flutter_dotenv: ^5.2.0
+
+  # Material Design
+  cupertino_icons: ^1.0.2
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  flutter_lints: ^6.0.0
 
-# This is the ONLY flutter: section you need
+  # Lints - UPDATED VERSION
+  flutter_lints: ^4.0.0
+
 flutter:
+  # To make sure your app uses the latest Material 3 design features
   uses-material-design: true
-
-  # Your .env file is now correctly listed as an asset
+  
+  # Crucial for the dotenv package to find your API key
   assets:
     - .env
