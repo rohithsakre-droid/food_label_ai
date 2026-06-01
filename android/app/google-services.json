@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "139205123544",
+    "project_id": "food-label-ai-d5970",
+    "storage_bucket": "food-label-ai-d5970.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:139205123544:android:b35234c5ad023b1292e6ad",
+        "android_client_info": {
+          "package_name": "com.example.food_label_ai"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDMMkGFvGEp330URwj0CraIqWY1NBsjR9A"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

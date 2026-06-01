@@ -5,9 +5,22 @@ import 'dart:io';
 import 'dart:convert';
 import 'dart:math' as math;
 import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'firebase_options.dart'; 
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  
+  // Initialize REAL Firebase
+  await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+  );
+
+  // 🔥 ADD THIS LINE: This disables the offline cache and forces network errors to print!
+  FirebaseFirestore.instance.settings = const Settings(persistenceEnabled: false);
+
   try {
     await dotenv.load(fileName: ".env");
   } catch (e) {
@@ -15,19 +28,20 @@ Future<void> main() async {
   }
   runApp(const MyApp());
 }
-
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
+      title: 'Food Label AI',
       theme: ThemeData(
         useMaterial3: true,
         fontFamily: 'sans-serif',
         colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFFF19E9E)),
       ),
-      home: const FoodLabelScreen(),
+      // Automatically route user based on auth state
+      home: FirebaseAuth.instance.currentUser == null ? const LoginScreen() : const FoodLabelScreen(),
     );
   }
 }
@@ -39,6 +53,7 @@ class AnalysisResult {
   final String healthRating;
   final int healthScore;
   final String detailedInsights;
+  final DateTime? scanDate;
 
   AnalysisResult({
     required this.productName,
@@ -46,6 +61,7 @@ class AnalysisResult {
     required this.healthRating,
     required this.healthScore,
     required this.detailedInsights,
+    this.scanDate,
   });
 
   factory AnalysisResult.fromJson(Map<String, dynamic> json) {
@@ -58,11 +74,370 @@ class AnalysisResult {
       healthRating: json['health_rating'] ?? 'Moderate',
       healthScore: int.tryParse(json['health_score'].toString()) ?? 50,
       detailedInsights: json['insights'] ?? 'No detailed analysis available.',
+      scanDate: DateTime.now(),
+    );
+  }
+
+  // Convert object to a Map for Firestore
+  Map<String, dynamic> toMap() {
+    return {
+      'productName': productName,
+      'ingredients': ingredients,
+      'healthRating': healthRating,
+      'healthScore': healthScore,
+      'detailedInsights': detailedInsights,
+      'scanDate': scanDate?.toIso8601String(),
+    };
+  }
+
+  // Create an object from Firestore data
+  factory AnalysisResult.fromFirestore(Map<String, dynamic> data) {
+    return AnalysisResult(
+      productName: data['productName'] ?? 'Unknown',
+      ingredients: List<String>.from(data['ingredients'] ?? []),
+      healthRating: data['healthRating'] ?? 'Moderate',
+      healthScore: data['healthScore'] ?? 50,
+      detailedInsights: data['detailedInsights'] ?? 'No insights.',
+      scanDate: data['scanDate'] != null ? DateTime.parse(data['scanDate']) : null,
     );
   }
 }
 
-// --- MAIN SCREEN ---
+// --- REAL FIREBASE SERVICE ---
+class FirebaseService {
+  static final FirebaseService _instance = FirebaseService._internal();
+  factory FirebaseService() => _instance;
+  FirebaseService._internal();
+
+  final FirebaseAuth _auth = FirebaseAuth.instance;
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+
+  User? get currentUser => _auth.currentUser;
+
+  Future<String?> signUp(String email, String password) async {
+    try {
+      await _auth.createUserWithEmailAndPassword(email: email, password: password);
+      return null; // Success
+    } on FirebaseAuthException catch (e) {
+      if (e.code == 'weak-password') return 'The password provided is too weak.';
+      if (e.code == 'email-already-in-use') return 'An account already exists for that email.';
+      return e.message;
+    } catch (e) {
+      return 'An unknown error occurred.';
+    }
+  }
+
+  Future<String?> login(String email, String password) async {
+    try {
+      await _auth.signInWithEmailAndPassword(email: email, password: password);
+      return null; // Success
+    } on FirebaseAuthException catch (e) {
+      if (e.code == 'user-not-found' || e.code == 'wrong-password' || e.code == 'invalid-credential') {
+        return 'Invalid email or password.';
+      }
+      return e.message;
+    } catch (e) {
+      return 'An unknown error occurred.';
+    }
+  }
+
+  // DIAGNOSTIC SAVE METHOD
+  Future<void> saveScan(AnalysisResult result) async {
+    if (currentUser == null) {
+      debugPrint("❌ ERROR: No user logged in.");
+      return;
+    }
+    
+    debugPrint("⏳ Handing data to Firebase (Local Cache)...");
+    
+    // Notice: We removed "await" and added .then() and .catchError()
+    _firestore
+        .collection('users')
+        .doc(currentUser!.uid)
+        .collection('scans')
+        .add(result.toMap())
+        .then((value) => debugPrint("✅ SUCCESS: Google servers finally received the data!"))
+        .catchError((error) => debugPrint("🚨 FIRESTORE REJECTED THE DATA: $error"));
+  }
+
+  Future<List<AnalysisResult>> getHistory() async {
+    if (currentUser == null) return [];
+
+    try {
+      QuerySnapshot snapshot = await _firestore
+          .collection('users')
+          .doc(currentUser!.uid)
+          .collection('scans')
+          .orderBy('scanDate', descending: true)
+          .get();
+
+      return snapshot.docs.map((doc) {
+        return AnalysisResult.fromFirestore(doc.data() as Map<String, dynamic>);
+      }).toList();
+      
+    } catch (e) {
+      debugPrint("Error fetching history: $e");
+      return [];
+    }
+  }
+  
+  Future<void> logout() async {
+    await _auth.signOut();
+  }
+}
+
+// --- LOGIN & SIGN UP SCREEN ---
+class LoginScreen extends StatefulWidget {
+  const LoginScreen({super.key});
+
+  @override
+  State<LoginScreen> createState() => _LoginScreenState();
+}
+
+class _LoginScreenState extends State<LoginScreen> {
+  final _emailController = TextEditingController();
+  final _passwordController = TextEditingController();
+  final _confirmPasswordController = TextEditingController();
+  
+  bool _isLoading = false;
+  bool _isLoginMode = true; 
+
+  Future<void> _handleSubmit() async {
+    FocusScope.of(context).unfocus(); 
+    setState(() => _isLoading = true);
+    
+    String email = _emailController.text.trim();
+    String password = _passwordController.text.trim();
+    String? errorMessage;
+
+    if (_isLoginMode) {
+      errorMessage = await FirebaseService().login(email, password);
+    } else {
+      if (password != _confirmPasswordController.text.trim()) {
+        errorMessage = "Passwords do not match.";
+      } else {
+        errorMessage = await FirebaseService().signUp(email, password);
+      }
+    }
+
+    setState(() => _isLoading = false);
+
+    if (errorMessage == null && mounted) {
+      Navigator.pushReplacement(
+        context, 
+        MaterialPageRoute(builder: (_) => const FoodLabelScreen())
+      );
+    } else if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(errorMessage ?? "An error occurred"),
+          backgroundColor: Colors.red.shade800,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    _emailController.dispose();
+    _passwordController.dispose();
+    _confirmPasswordController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Stack(
+        children: [
+          Container(color: const Color(0xFFFDE6E6)),
+          const DiagonalBackgroundShape(),
+          const GridPainterWidget(),
+          SafeArea(
+            child: Center(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.symmetric(horizontal: 32.0),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(
+                      _isLoginMode ? "Welcome Back" : "Create Account",
+                      style: const TextStyle(
+                        fontSize: 42,
+                        fontWeight: FontWeight.w900,
+                        color: Color(0xFF333333),
+                        letterSpacing: -1.0,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 10),
+                    Text(
+                      _isLoginMode 
+                        ? "Sign in to access your Food Label AI" 
+                        : "Join us to start analyzing your food",
+                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.black87),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 40),
+                    
+                    _buildTextField("Email", Icons.email_outlined, _emailController, false),
+                    const SizedBox(height: 20),
+                    _buildTextField("Password", Icons.lock_outline, _passwordController, true),
+                    
+                    AnimatedContainer(
+                      duration: const Duration(milliseconds: 300),
+                      height: _isLoginMode ? 0 : 80,
+                      curve: Curves.easeInOut,
+                      child: SingleChildScrollView(
+                        physics: const NeverScrollableScrollPhysics(),
+                        child: Column(
+                          children: [
+                            const SizedBox(height: 20),
+                            _buildTextField("Confirm Password", Icons.lock_reset, _confirmPasswordController, true),
+                          ],
+                        ),
+                      ),
+                    ),
+
+                    const SizedBox(height: 30),
+                    
+                    _isLoading 
+                      ? const CircularProgressIndicator(color: Color(0xFF9E6464))
+                      : SizedBox(
+                          width: double.infinity,
+                          height: 56,
+                          child: ElevatedButton(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFF9E6464),
+                              foregroundColor: Colors.white,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
+                              elevation: 2,
+                            ),
+                            onPressed: _handleSubmit,
+                            child: Text(
+                              _isLoginMode ? "Log In" : "Sign Up", 
+                              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)
+                            ),
+                          ),
+                        ),
+                    
+                    const SizedBox(height: 20),
+                    
+                    TextButton(
+                      onPressed: () {
+                        setState(() {
+                          _isLoginMode = !_isLoginMode;
+                          _emailController.clear();
+                          _passwordController.clear();
+                          _confirmPasswordController.clear();
+                        });
+                      },
+                      child: Text(
+                        _isLoginMode 
+                          ? "Don't have an account? Sign Up" 
+                          : "Already have an account? Log In",
+                        style: const TextStyle(
+                          color: Color(0xFF333333),
+                          fontWeight: FontWeight.bold,
+                          fontSize: 15,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTextField(String hint, IconData icon, TextEditingController controller, bool isPassword) {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.9),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0xFF9E6464).withOpacity(0.5), width: 2),
+      ),
+      child: TextField(
+        controller: controller,
+        obscureText: isPassword,
+        keyboardType: isPassword ? TextInputType.text : TextInputType.emailAddress,
+        decoration: InputDecoration(
+          hintText: hint,
+          prefixIcon: Icon(icon, color: const Color(0xFF9E6464)),
+          border: InputBorder.none,
+          contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+        ),
+      ),
+    );
+  }
+}
+
+// --- HISTORY SCREEN ---
+class HistoryScreen extends StatelessWidget {
+  const HistoryScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFFFDE6E6),
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        title: const Text("Scan History", style: TextStyle(fontWeight: FontWeight.w900, color: Color(0xFF333333))),
+        iconTheme: const IconThemeData(color: Color(0xFF333333)),
+      ),
+      body: Stack(
+        children: [
+          const GridPainterWidget(),
+          FutureBuilder<List<AnalysisResult>>(
+            future: FirebaseService().getHistory(),
+            builder: (context, snapshot) {
+              if (snapshot.connectionState == ConnectionState.waiting) {
+                return const Center(child: CircularProgressIndicator(color: Color(0xFF9E6464)));
+              }
+              if (!snapshot.hasData || snapshot.data!.isEmpty) {
+                return const Center(
+                  child: Text("No scans yet. Start scanning!", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                );
+              }
+
+              final history = snapshot.data!;
+              return ListView.builder(
+                padding: const EdgeInsets.all(20),
+                itemCount: history.length,
+                itemBuilder: (context, index) {
+                  final item = history[index];
+                  return Card(
+                    margin: const EdgeInsets.only(bottom: 16),
+                    elevation: 4,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                    color: Colors.white.withOpacity(0.95),
+                    child: ListTile(
+                      contentPadding: const EdgeInsets.all(16),
+                      title: Text(item.productName, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+                      subtitle: Padding(
+                        padding: const EdgeInsets.only(top: 8.0),
+                        child: Text("Health Score: ${item.healthScore}/100\nRating: ${item.healthRating}", style: const TextStyle(height: 1.4)),
+                      ),
+                      trailing: const Icon(Icons.analytics_outlined, color: Color(0xFF9E6464), size: 28),
+                      isThreeLine: true,
+                    ),
+                  );
+                },
+              );
+            },
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// --- MAIN SCANNER SCREEN ---
 class FoodLabelScreen extends StatefulWidget {
   const FoodLabelScreen({super.key});
   @override
@@ -192,8 +567,13 @@ class _FoodLabelScreenState extends State<FoodLabelScreen> with SingleTickerProv
         String jsonString = data['candidates'][0]['content']['parts'][0]['text'];
         jsonString = jsonString.replaceAll('```json', '').replaceAll('```', '').trim();
 
+        final parsedResult = AnalysisResult.fromJson(jsonDecode(jsonString));
+        
+        // Save scan using our new diagnostic method
+        FirebaseService().saveScan(parsedResult);
+
         setState(() {
-          _analysisResult = AnalysisResult.fromJson(jsonDecode(jsonString));
+          _analysisResult = parsedResult;
           _isLoading = false;
         });
       } else {
@@ -202,7 +582,7 @@ class _FoodLabelScreenState extends State<FoodLabelScreen> with SingleTickerProv
       }
     } catch (e) {
       setState(() => _isLoading = false);
-      _showErrorDialog("The scan failed. Check your internet or try again.");
+      _showErrorDialog("The scan failed. Check your internet connection or try again.");
     }
   }
 
@@ -211,17 +591,43 @@ class _FoodLabelScreenState extends State<FoodLabelScreen> with SingleTickerProv
     return Scaffold(
       body: Stack(
         children: [
-          // Background Base Color (Off-white/pinkish)
           Container(color: const Color(0xFFFDE6E6)),
-          
-          // Diagonal Pink Shape - Slope adjusted to match Figma
           const DiagonalBackgroundShape(),
-
-          // Grid Overlay - Subtle and properly scaled
           const GridPainterWidget(),
           
           SafeArea(
-            child: _analysisResult == null ? _buildHomeContent() : _buildResultsContent(),
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      IconButton(
+                        icon: const Icon(Icons.history, color: Color(0xFF333333), size: 28),
+                        tooltip: "Scan History",
+                        onPressed: () {
+                          Navigator.push(context, MaterialPageRoute(builder: (_) => const HistoryScreen()));
+                        },
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.logout, color: Color(0xFF333333), size: 26),
+                        tooltip: "Log Out",
+                        onPressed: () async {
+                          await FirebaseService().logout();
+                          if (context.mounted) {
+                            Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const LoginScreen()));
+                          }
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+                Expanded(
+                  child: _analysisResult == null ? _buildHomeContent() : _buildResultsContent(),
+                ),
+              ],
+            ),
           ),
         ],
       ),
@@ -234,7 +640,6 @@ class _FoodLabelScreenState extends State<FoodLabelScreen> with SingleTickerProv
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          const SizedBox(height: 30),
           const Text(
             "Food Label AI",
             style: TextStyle(
@@ -253,9 +658,8 @@ class _FoodLabelScreenState extends State<FoodLabelScreen> with SingleTickerProv
               color: Colors.black87,
             ),
           ),
-          const SizedBox(height: 35),
+          const SizedBox(height: 25),
           
-          // Image Frame with specific brown/red border from design
           Expanded(
             child: Container(
               width: double.infinity,
@@ -263,7 +667,7 @@ class _FoodLabelScreenState extends State<FoodLabelScreen> with SingleTickerProv
                 color: Colors.white.withOpacity(0.05),
                 borderRadius: BorderRadius.circular(40),
                 border: Border.all(
-                  color: const Color(0xFF9E6464), // Figma border color
+                  color: const Color(0xFF9E6464),
                   width: 12,
                 ),
               ),
@@ -282,9 +686,8 @@ class _FoodLabelScreenState extends State<FoodLabelScreen> with SingleTickerProv
             ),
           ),
           
-          const SizedBox(height: 35),
+          const SizedBox(height: 25),
           
-          // Action Buttons - Pill style with semi-transparency
           Row(
             children: [
               _actionBtn(Icons.camera_alt_outlined, "Capture a photo", () => _pickImage(ImageSource.camera)),
@@ -293,10 +696,8 @@ class _FoodLabelScreenState extends State<FoodLabelScreen> with SingleTickerProv
             ],
           ),
           
-          const SizedBox(height: 20),
-          // Refined Salad Bowl illustration
-          const SaladBowlIllustration(),
           const SizedBox(height: 10),
+          const SaladBowlIllustration(),
         ],
       ),
     );
@@ -451,8 +852,7 @@ class _FoodLabelScreenState extends State<FoodLabelScreen> with SingleTickerProv
   }
 }
 
-// --- REFINED UI COMPONENTS ---
-
+// --- BACKGROUND COMPONENTS ---
 class DiagonalBackgroundShape extends StatelessWidget {
   const DiagonalBackgroundShape({super.key});
 
@@ -471,7 +871,6 @@ class _DiagonalPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final paint = Paint()..color = const Color(0xFFF19E9E);
     final path = Path();
-    // Adjusted slope to match Figma design
     path.moveTo(0, size.height * 0.38); 
     path.lineTo(size.width, size.height * 0.62); 
     path.lineTo(size.width, size.height);
@@ -497,7 +896,7 @@ class _GridPainter extends CustomPainter {
     final paint = Paint()
       ..color = const Color(0xFFF19E9E).withOpacity(0.15)
       ..strokeWidth = 0.8;
-    const double step = 24; // Better grid spacing for the aesthetic
+    const double step = 24; 
     for (double i = 0; i < size.width; i += step) {
       canvas.drawLine(Offset(i, 0), Offset(i, size.height), paint);
     }
@@ -528,7 +927,6 @@ class _DetailedSaladBowlPainter extends CustomPainter {
     final centerX = size.width / 2;
     final bottomY = size.height * 0.8;
 
-    // 1. THE BOWL - Better shape with top lip
     final bowlPaint = Paint()..color = const Color(0xFFE55A5A)..style = PaintingStyle.fill;
     final bowlPath = Path();
     bowlPath.moveTo(centerX - 120, bottomY - 90);
@@ -538,11 +936,9 @@ class _DetailedSaladBowlPainter extends CustomPainter {
     bowlPath.close();
     canvas.drawPath(bowlPath, bowlPaint);
 
-    // Inner shadow of the bowl
     final shadowPaint = Paint()..color = const Color(0xFFD44B4B)..style = PaintingStyle.fill;
     canvas.drawArc(Rect.fromCenter(center: Offset(centerX, bottomY + 10), width: 200, height: 60), 0, math.pi, false, shadowPaint);
 
-    // 2. INGREDIENTS
     final leafPaint = Paint()..color = const Color(0xFF8BCC64);
     final darkLeafPaint = Paint()..color = const Color(0xFF679B48);
     final tomatoPaint = Paint()..color = const Color(0xFFE94E4E);
@@ -550,24 +946,20 @@ class _DetailedSaladBowlPainter extends CustomPainter {
     final cucumberDotPaint = Paint()..color = const Color(0xFF679B48).withOpacity(0.6);
     final cornPaint = Paint()..color = const Color(0xFFFFD54F);
 
-    // Lettuce Leaves (Wavy/Multi-circle)
     for (int i = 0; i < 6; i++) {
       double offsetX = centerX - 110 + (i * 45);
       canvas.drawCircle(Offset(offsetX, bottomY - 110), 35, leafPaint);
       canvas.drawCircle(Offset(offsetX + 15, bottomY - 125), 30, darkLeafPaint);
     }
 
-    // Tomato Slices (Detailed with segments)
     _drawDetailedTomato(canvas, centerX - 70, bottomY - 100, tomatoPaint);
     _drawDetailedTomato(canvas, centerX + 70, bottomY - 105, tomatoPaint);
     _drawDetailedTomato(canvas, centerX + 10, bottomY - 80, tomatoPaint);
 
-    // Cucumber Slices (Detailed with dots)
     _drawDetailedCucumber(canvas, centerX - 30, bottomY - 130, cucumberPaint, cucumberDotPaint);
     _drawDetailedCucumber(canvas, centerX + 40, bottomY - 125, cucumberPaint, cucumberDotPaint);
     _drawDetailedCucumber(canvas, centerX - 90, bottomY - 85, cucumberPaint, cucumberDotPaint);
 
-    // Corn Kernels (Small clusters)
     for (var i = 0; i < 15; i++) {
       canvas.drawCircle(Offset(centerX - 100 + (i * 15) + (i % 3 * 5), bottomY - 80 + (i % 2 * 15)), 5, cornPaint);
     }
@@ -576,7 +968,6 @@ class _DetailedSaladBowlPainter extends CustomPainter {
   void _drawDetailedTomato(Canvas canvas, double x, double y, Paint paint) {
     canvas.drawCircle(Offset(x, y), 32, paint);
     final segmentPaint = Paint()..color = Colors.white.withOpacity(0.4)..style = PaintingStyle.stroke..strokeWidth = 2;
-    // Draw cross segment lines
     canvas.drawLine(Offset(x - 20, y), Offset(x + 20, y), segmentPaint);
     canvas.drawLine(Offset(x, y - 20), Offset(x, y + 20), segmentPaint);
     canvas.drawCircle(Offset(x, y), 22, segmentPaint);
@@ -584,7 +975,6 @@ class _DetailedSaladBowlPainter extends CustomPainter {
 
   void _drawDetailedCucumber(Canvas canvas, double x, double y, Paint bg, Paint dots) {
     canvas.drawCircle(Offset(x, y), 20, bg);
-    // Draw tiny seed dots in a ring
     for (int i = 0; i < 8; i++) {
       double angle = (i * 45) * math.pi / 180;
       canvas.drawCircle(Offset(x + 10 * math.cos(angle), y + 10 * math.sin(angle)), 2.5, dots);

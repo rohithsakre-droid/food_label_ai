@@ -30,6 +30,11 @@
 	<string>We need camera access to scan food labels</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>We need photo library access to pick food label images</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
